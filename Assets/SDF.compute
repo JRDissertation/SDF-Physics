@@ -1,0 +1,239 @@
+﻿#include "Structs.compute"
+
+
+//Massive thanks to Inigo Quilez for his freely accessible and fantastically
+//informative website www.iquilezles.org that has provided many of the SDFs
+//written below.
+class SDF  {
+    RWStructuredBuffer<Shape> shapes;
+    int shapeCount;
+    int cutting_shape;
+    StructuredBuffer<Light> lights;
+    int lightCount;
+
+    float SDF(float3 pos, int shapeIndex) {
+        float d = 0.0f;
+        //Why are a load of SDFs left out of this switch statement?
+
+        //Adding an additional SDF requires ~1Gb more memory at compile time (depending on function complexity)
+        //likely something to do with function unravelling when calling "derivative" 
+        //in the physics loop (which is called 1000x). I have 16Gb of memory, and compiling all of these
+        //requires ~30Gb of memory. I don't know how to stop the compiler doing this,
+        //so I've picked the functions for which the inertia tensors are known. Using
+        //the [call] directive makes the compile take longer than I'm willing to wait.
+        
+        [branch] switch(shapes[shapeIndex].shapeType) {
+            case 0: //Sphere
+                d = sphereDist(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            case 1: // Cube
+                d = cubeDist(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            case 2: // Torus
+                d = torusDist(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            case 3: // Menger Sponge
+                d = mengerDist(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            case 4: // Plane
+                d = planeDist(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            case 5: // Hexagonal Prism
+                d = hexagonalDist(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            case 6:
+                d = repeatingCubesDist(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            case 8:
+                d = coneDist(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            case 10:
+                d = invertedSection(pos, shapes[shapeIndex].inverseTransform);
+                break;
+            
+            default:
+                d = 10.0f;
+                break;
+        }
+        return d * min(shapes[shapeIndex].scale.x, min(shapes[shapeIndex].scale.y, shapes[shapeIndex].scale.z));
+    }
+
+    float getBound(int shapeIndex) {
+        float d = 1.0f;
+        if (shapes[shapeIndex].shapeType == 0) {//Sphere
+            d = 1.0f;
+        }
+        if (shapes[shapeIndex].shapeType == 1) {//Cube
+            d = 1.8f;
+        }
+        if (shapes[shapeIndex].shapeType == 2) {//Torus
+            d = 3.0f;
+        }
+        if (shapes[shapeIndex].shapeType == 3) {//Mandelbulb
+            d = 1.8f;
+        }
+        if (shapes[shapeIndex].shapeType == 4) {//Plane
+            d = -1.0f;
+        }
+        if (shapes[shapeIndex].shapeType == 5) {//Hexagonal prism
+            d =  1.55f;
+        }
+        if (shapes[shapeIndex].shapeType == 6) { //Infinitely long cube
+            d = 1000.0f;
+        }
+        if (shapes[shapeIndex].shapeType == 7) { //Capped torus
+            d = 3.0f;
+        }
+        if (shapes[shapeIndex].shapeType == 8) { //Cone
+            d = 2.3f;
+        }
+        if (shapes[shapeIndex].shapeType == 9) { //Triangular prism
+            d = 2.0f;
+        }
+        if (shapes[shapeIndex].shapeType == 10) { //Cylinder
+            d = 3.0f;
+        }
+        return d * max(shapes[shapeIndex].scale.x, max(shapes[shapeIndex].scale.y, shapes[shapeIndex].scale.z));
+    }
+
+    float worldSDF(float3 pos) {
+        float distance = 12345.0f;
+
+        for (int i = 0; i < shapeCount; i++) {
+        
+            float d = 0;
+        
+            d = SDF(pos, i);
+
+            if (d < distance) {
+                distance = d;
+            }
+        }
+    
+        return distance;
+    }
+    float hexagonalDist(float3 pos, float4x4 transform) {
+        const float3 k = float3(-0.8660254, 0.5, 0.57735);
+        float3 h = float3(1.0, 1.0, 1.0);
+        pos = abs(mul(transform, float4(pos, 1)).xyz);
+        pos.xy -= 2.0*min(dot(k.xy, pos.xy), 0.0)*k.xy;
+        float2 d = float2(
+        length(pos.xy-float2(clamp(pos.x,-k.z*h.x,k.z*h.x), h.x))*sign(pos.y-h.x),
+        pos.z-h.y );
+        return min(max(d.x,d.y),0.0) + length(max(d,0.0));
+    }
+
+    float sphereDist(float3 pos, float4x4 transform) {
+        return distance(mul(transform, float4(pos, 1)).xyz, float3(0.0f, 0.0f, 0.0f) ) - 1.0f;
+    }   
+
+    float cubeDist(float3 pos, float4x4 transform) {
+        float3 q = abs(mul(transform, float4(pos, 1))).xyz - float3(1.0f, 1.0f, 1.0f);
+        return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)),0.0);
+    }   
+
+    float torusDist(float3 pos, float4x4 transform) {
+        float3 transformedPos = mul(transform, float4(pos, 1)).xyz;
+        float2 t = float2(2.0f, 1.0f);
+        float2 q = float2(length(transformedPos.xz) - t.x, transformedPos.y);
+        return length(q) - t.y;
+    }
+  
+    float repeatingCubesDist(float3 pos, float4x4 transform) {
+        float3 transformedPos = mul(transform, float4(pos, 1)).xyz;
+        //transformedPos.x = 0.0f;//transformedPos.x % 10.0f;
+        //float3 q = abs(transformedPos) - float3(1.0f, 1.0f, 1.0f);
+        //float cube_dist = cubeDist(pos, transform);
+        //float sphere_dist = 100.0f;
+        //if (cutting_shape == 1) {
+        //    sphere_dist = cuttingSphereDist(pos + float3(0.0f, 0.0f, 0.0f), transform);
+        //}
+        float d1 = transformedPos.y;
+        float d2 = sin((2.0f * 3.1415f) * transformedPos.x);
+        return d1 + d2;
+        //return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)),0.0);
+        //return max(cube_dist, -1.0f * sphere_dist);
+    }
+
+    float invertedSection(float3 pos, float4x4 transform) {
+        float cube_dist = cubeDist(pos, transform);
+        float sphere_dist = cuttingSphereDist(pos + float3(0.0f, 0.0f, 0.0f), transform);
+        
+        return max(cube_dist, sphere_dist);
+    }
+
+    float cuttingSphereDist(float3 pos, float4x4 transform) {
+        float3 transformedPos = mul(transform, float4(pos, 1)).xyz;
+        transformedPos.x = 0.0f;
+        return distance(transformedPos, float3(0.0f, 0.0f, 0.0f) ) - 0.66f;
+        //return distance(pos, float3(0.0f, 0.0f, 0.0f) ) - 1.0f;
+    }   
+    float cappedTorusDist(float3 pos, float4x4 transform) {
+        float3 transformedPos = mul(transform, float4(pos, 1)).xyz;
+        transformedPos.x = abs(transformedPos.x);
+        float2 sc = float2(1.0f, 0.0f);
+        float ra = 2.0f;
+        float rb = 1.0f;
+        float k = (sc.y*transformedPos.x>sc.x*transformedPos.y) ? dot(transformedPos.xy,sc) : length(transformedPos.xy);
+        return sqrt( dot(transformedPos,transformedPos) + ra*ra - 2.0*ra*k ) - rb;
+    }
+
+    float coneDist(float3 pos, float4x4 transform) {
+        transform[1][3] -= 2.0f;
+        float3 transformedPos = mul(transform, float4(pos, 1)).xyz;
+        float q = length(transformedPos.xz);
+        float2 c = float2(0.866025f, 0.5f);
+        float h = 2.0f;
+        return max(dot(c, float2(q, transformedPos.y)), -h - transformedPos.y);
+    }
+
+    float triangularPrismDist(float3 pos, float4x4 transform) {
+        float3 transformedPos = mul(transform, float4(pos, 1)).xyz;
+        float3 q = abs(transformedPos);
+        float2 h = float2(1.0f, 1.0f);
+        return max(q.z-h.y,max(q.x*0.866025+transformedPos.y*0.5,-transformedPos.y)-h.x*0.5);
+    }
+    
+    float cylinderDist(float3 pos, float4x4 transform) {
+        float3 transformedPos = mul(transform, float4(pos, 1)).xyz;
+        float2 d = abs(float2(length(transformedPos.xz), transformedPos.y)) - float2(1.0f, 1.0f);
+        return min(max(d.x, d.y), 0.0f) + length(max(d, 0.0f));
+    }
+    
+    float mengerDist(float3 pos, float4x4 transform) {
+
+        int Iterations = 2;
+        float Scale = 2.0f;
+        float3 Offset = float3(1.0, 1.0, 1.0);
+
+        pos = mul(transform, float4(pos, 1)).xyz;
+        int n = 4;
+        float x=pos.x;
+        float y=pos.y;
+        float z=pos.z;
+    	x=x*0.5+0.5;y=y*0.5+0.5;z=z*0.5+0.5; //center it by changing position and scale 
+
+    	float xx=abs(x-0.5)-0.5, yy=abs(y-0.5)-0.5, zz=abs(z-0.5)-0.5;
+    	float d1=max(xx,max(yy,zz)); //distance to the box
+    	float d=d1; //current computed distance
+    	float p=1.0;
+    	for (int i=1; i<=n; ++i) {
+    		float xa = fmod(3.0*x*p,3.0);
+    		float ya = fmod(3.0*y*p,3.0);
+    		float za = fmod(3.0*z*p,3.0);
+    		p*=3.0; 
+
+    		//we can also translate/rotate (xa,ya,za) without affecting the DE estimate 
+
+    		float xx=0.5-abs(xa-1.5), yy=0.5-abs(ya-1.5), zz=0.5-abs(za-1.5);
+    		d1=min(max(xx,zz),min(max(xx,yy),max(yy,zz))) / p; //distance inside the 3 axis-aligned square tubes    
+
+    		d=max(d,d1); //intersection
+    	}
+    	return d;
+    }
+
+    float planeDist(float3 pos, float4x4 transform) {
+        return mul(transform, float4(pos, 1)).y;
+    }
+};

@@ -1,0 +1,513 @@
+#include "SDF.compute"
+
+RWStructuredBuffer<Shape> shapes;
+
+#pragma kernel Physics
+
+int shapeCount;
+//RWStructuredBuffer<int> tasks;
+float deltaTime;
+SDF sdf;
+static const float epsilon = 0.0001f;
+int cutting_shape;
+
+void setInverse(int id) {
+    float4x4 m = shapes[id].transform;
+    float A2323 = m[2][2] * m[3][3] - m[2][3] * m[3][2] ;
+    float A1323 = m[2][1] * m[3][3] - m[2][3] * m[3][1] ;
+    float A1223 = m[2][1] * m[3][2] - m[2][2] * m[3][1] ;
+    float A0323 = m[2][0] * m[3][3] - m[2][3] * m[3][0] ;
+    float A0223 = m[2][0] * m[3][2] - m[2][2] * m[3][0] ;
+    float A0123 = m[2][0] * m[3][1] - m[2][1] * m[3][0] ;
+    float A2313 = m[1][2] * m[3][3] - m[1][3] * m[3][2] ;
+    float A1313 = m[1][1] * m[3][3] - m[1][3] * m[3][1] ;
+    float A1213 = m[1][1] * m[3][2] - m[1][2] * m[3][1] ;
+    float A2312 = m[1][2] * m[2][3] - m[1][3] * m[2][2] ;
+    float A1312 = m[1][1] * m[2][3] - m[1][3] * m[2][1] ;
+    float A1212 = m[1][1] * m[2][2] - m[1][2] * m[2][1] ;
+    float A0313 = m[1][0] * m[3][3] - m[1][3] * m[3][0] ;
+    float A0213 = m[1][0] * m[3][2] - m[1][2] * m[3][0] ;
+    float A0312 = m[1][0] * m[2][3] - m[1][3] * m[2][0] ;
+    float A0212 = m[1][0] * m[2][2] - m[1][2] * m[2][0] ;
+    float A0113 = m[1][0] * m[3][1] - m[1][1] * m[3][0] ;
+    float A0112 = m[1][0] * m[2][1] - m[1][1] * m[2][0] ;
+
+    float det = m[0][0] * ( m[1][1] * A2323 - m[1][2] * A1323 + m[1][3] * A1223 ) 
+              - m[0][1] * ( m[1][0] * A2323 - m[1][2] * A0323 + m[1][3] * A0223 ) 
+              + m[0][2] * ( m[1][0] * A1323 - m[1][1] * A0323 + m[1][3] * A0123 ) 
+              - m[0][3] * ( m[1][0] * A1223 - m[1][1] * A0223 + m[1][2] * A0123 ) ;
+    det = 1 / det;
+
+    float4x4 a = {
+        det *   ( m[1][1] * A2323 - m[1][2] * A1323 + m[1][3] * A1223 ), 
+        det * - ( m[0][1] * A2323 - m[0][2] * A1323 + m[0][3] * A1223 ),
+        det *   ( m[0][1] * A2313 - m[0][2] * A1313 + m[0][3] * A1213 ),
+        det * - ( m[0][1] * A2312 - m[0][2] * A1312 + m[0][3] * A1212 ),
+        det * - ( m[1][0] * A2323 - m[1][2] * A0323 + m[1][3] * A0223 ),
+        det *   ( m[0][0] * A2323 - m[0][2] * A0323 + m[0][3] * A0223 ),
+        det * - ( m[0][0] * A2313 - m[0][2] * A0313 + m[0][3] * A0213 ),
+        det *   ( m[0][0] * A2312 - m[0][2] * A0312 + m[0][3] * A0212 ),
+        det *   ( m[1][0] * A1323 - m[1][1] * A0323 + m[1][3] * A0123 ),
+        det * - ( m[0][0] * A1323 - m[0][1] * A0323 + m[0][3] * A0123 ),
+        det *   ( m[0][0] * A1313 - m[0][1] * A0313 + m[0][3] * A0113 ),
+        det * - ( m[0][0] * A1312 - m[0][1] * A0312 + m[0][3] * A0112 ),
+        det * - ( m[1][0] * A1223 - m[1][1] * A0223 + m[1][2] * A0123 ),
+        det *   ( m[0][0] * A1223 - m[0][1] * A0223 + m[0][2] * A0123 ),
+        det * - ( m[0][0] * A1213 - m[0][1] * A0213 + m[0][2] * A0113 ),
+        det *   ( m[0][0] * A1212 - m[0][1] * A0212 + m[0][2] * A0112 ),
+    };
+    shapes[id].inverseTransform = a;
+}
+
+float4x4 invert(float4x4 m) {
+    float A2323 = m[2][2] * m[3][3] - m[2][3] * m[3][2] ;
+    float A1323 = m[2][1] * m[3][3] - m[2][3] * m[3][1] ;
+    float A1223 = m[2][1] * m[3][2] - m[2][2] * m[3][1] ;
+    float A0323 = m[2][0] * m[3][3] - m[2][3] * m[3][0] ;
+    float A0223 = m[2][0] * m[3][2] - m[2][2] * m[3][0] ;
+    float A0123 = m[2][0] * m[3][1] - m[2][1] * m[3][0] ;
+    float A2313 = m[1][2] * m[3][3] - m[1][3] * m[3][2] ;
+    float A1313 = m[1][1] * m[3][3] - m[1][3] * m[3][1] ;
+    float A1213 = m[1][1] * m[3][2] - m[1][2] * m[3][1] ;
+    float A2312 = m[1][2] * m[2][3] - m[1][3] * m[2][2] ;
+    float A1312 = m[1][1] * m[2][3] - m[1][3] * m[2][1] ;
+    float A1212 = m[1][1] * m[2][2] - m[1][2] * m[2][1] ;
+    float A0313 = m[1][0] * m[3][3] - m[1][3] * m[3][0] ;
+    float A0213 = m[1][0] * m[3][2] - m[1][2] * m[3][0] ;
+    float A0312 = m[1][0] * m[2][3] - m[1][3] * m[2][0] ;
+    float A0212 = m[1][0] * m[2][2] - m[1][2] * m[2][0] ;
+    float A0113 = m[1][0] * m[3][1] - m[1][1] * m[3][0] ;
+    float A0112 = m[1][0] * m[2][1] - m[1][1] * m[2][0] ;
+
+    float det = m[0][0] * ( m[1][1] * A2323 - m[1][2] * A1323 + m[1][3] * A1223 ) 
+              - m[0][1] * ( m[1][0] * A2323 - m[1][2] * A0323 + m[1][3] * A0223 ) 
+              + m[0][2] * ( m[1][0] * A1323 - m[1][1] * A0323 + m[1][3] * A0123 ) 
+              - m[0][3] * ( m[1][0] * A1223 - m[1][1] * A0223 + m[1][2] * A0123 ) ;
+    det = 1 / det;
+
+    float4x4 a = {
+        det *   ( m[1][1] * A2323 - m[1][2] * A1323 + m[1][3] * A1223 ), 
+        det * - ( m[0][1] * A2323 - m[0][2] * A1323 + m[0][3] * A1223 ),
+        det *   ( m[0][1] * A2313 - m[0][2] * A1313 + m[0][3] * A1213 ),
+        det * - ( m[0][1] * A2312 - m[0][2] * A1312 + m[0][3] * A1212 ),
+        det * - ( m[1][0] * A2323 - m[1][2] * A0323 + m[1][3] * A0223 ),
+        det *   ( m[0][0] * A2323 - m[0][2] * A0323 + m[0][3] * A0223 ),
+        det * - ( m[0][0] * A2313 - m[0][2] * A0313 + m[0][3] * A0213 ),
+        det *   ( m[0][0] * A2312 - m[0][2] * A0312 + m[0][3] * A0212 ),
+        det *   ( m[1][0] * A1323 - m[1][1] * A0323 + m[1][3] * A0123 ),
+        det * - ( m[0][0] * A1323 - m[0][1] * A0323 + m[0][3] * A0123 ),
+        det *   ( m[0][0] * A1313 - m[0][1] * A0313 + m[0][3] * A0113 ),
+        det * - ( m[0][0] * A1312 - m[0][1] * A0312 + m[0][3] * A0112 ),
+        det * - ( m[1][0] * A1223 - m[1][1] * A0223 + m[1][2] * A0123 ),
+        det *   ( m[0][0] * A1223 - m[0][1] * A0223 + m[0][2] * A0123 ),
+        det * - ( m[0][0] * A1213 - m[0][1] * A0213 + m[0][2] * A0113 ),
+        det *   ( m[0][0] * A1212 - m[0][1] * A0212 + m[0][2] * A0112 ),
+    };
+    return a;
+}
+
+float3 derivative(float3 position, int objIndex) {
+    float3 normal = float3(
+        sdf.SDF( float3(position.x + epsilon, position.y, position.z), objIndex) - 
+        sdf.SDF( float3(position.x - epsilon, position.y, position.z), objIndex) ,
+        sdf.SDF( float3(position.x, position.y + epsilon, position.z), objIndex) - 
+        sdf.SDF( float3(position.x, position.y - epsilon, position.z), objIndex) ,
+        sdf.SDF( float3(position.x, position.y, position.z + epsilon), objIndex) - 
+        sdf.SDF( float3(position.x, position.y, position.z - epsilon), objIndex) );
+        normal = normalize(normal);
+        return normal;
+}
+
+int sample_space(Task task, uint3 id, int shapeId) {
+    float3 localPos = task.centre + float3((-5 + id.x) * task.width, (-5 + id.y) * task.width, (-5 + id.z) * task.width);
+    return sdf.SDF(localPos, shapeId) < 0 ? 1 : 0;
+}
+
+#define MISS 0
+#define HIT 1
+#define RESAMPLE 2
+
+float3 id_to_samplepos(uint3 id, float width, float3 centre) {
+    return centre + float3((-4.5 + (float) id.x) * width, (-4.5 + (float) id.y) * width, (-4.5 + (float) id.z) * width);
+}
+
+int point_sample(Task task, uint3 id, int shape1, int shape2) {
+    float3 sample_pos = id_to_samplepos(id, task.width, task.centre);
+    float sample1 = sdf.SDF(sample_pos, shape1);
+    float sample2 = sdf.SDF(sample_pos, shape2);
+    if (-sample1 > task.width && -sample2 > task.width) {
+        return HIT;
+    }
+    if (sample1 > task.width || sample2 > task.width) {
+        return MISS;
+    }
+    return RESAMPLE;
+}
+
+float point_sample_final(Task task, uint3 id, int shape1, int shape2) {
+    float3 sample_pos = id_to_samplepos(id, task.width, task.centre);
+    float sample1 = sdf.SDF(sample_pos, shape1);
+    float sample2 = sdf.SDF(sample_pos, shape2);
+    if (sample1 < 0.0f && sample2 < 0.0f) {
+        return -sample2;
+    }
+    return 0;
+}
+
+int id_lin(uint3 id) {
+    return id.x + 10 * id.y + 100 * id.z;
+}
+
+uint3 lin_id(uint i) {
+    uint3 ret = uint3(0, 0, 0);
+    ret.x = i % 10;
+    ret.y = ((i % 100) - ret.x) / 10;
+    ret.z = (i - ret.y - ret.x) / 100;
+    return ret;
+}
+
+void setPos(int shape, float3 pos) {
+    shapes[shape].transform[0][3] = pos.x;
+    shapes[shape].transform[1][3] = pos.y;
+    shapes[shape].transform[2][3] = pos.z;
+
+}
+
+float3 cast_projection(float3 v, float3 c) {
+    float a = dot(c, v) / dot(c, c);
+    return a * c;
+}
+
+void translate(int shape, float3 vec) {
+    shapes[shape].transform[0][3] += vec.x;
+    shapes[shape].transform[1][3] += vec.y;
+    shapes[shape].transform[2][3] += vec.z;
+}
+
+float4 get_angular_component(float3 to_centre, float3 normal) {
+    float mag = length(to_centre);
+    to_centre = normalize(to_centre);
+    float3 b = cross(normal, to_centre);
+    b = cross(to_centre, b);
+    return float4(b, mag);
+}
+
+groupshared int resample_record[1000];
+groupshared float max_penetration = 0;
+groupshared float3 max_pushdir = float3(0.0f, 0.0f, 0.0f);
+groupshared float3 max_penetration_position = float3(0.0f, 0.0f, 0.0f);
+
+groupshared float3 closest_rotation_contact = float3(0.0f, 0.0f, 0.0f);
+groupshared float closest_rotation_contact_dist = 999.0f;
+groupshared float3 closest_rotation_normal = float3(0.0f, 0.0f, 0.0f);
+
+groupshared int collision_count = 0;
+groupshared float3 group_normal = float3(0.0f, 0.0f, 0.0f);
+groupshared int group_colliding = 0;
+[numthreads(10,10,10)]
+void Physics (uint3 id : SV_GroupThreadID, uint3 g_id : SV_GroupID, uint t_id : SV_GroupIndex)
+{
+    sdf.shapes = shapes;
+    sdf.shapeCount = shapeCount;
+    sdf.cutting_shape = cutting_shape;
+    uint group_id = g_id.x;
+    if (t_id == 0) {
+        shapes[group_id].collision_push = float3(0.0f, 0.0f, 0.0f);
+        translate(group_id, shapes[group_id].velocity * deltaTime);
+        shapes[group_id].collision_volume = 0.0f;
+        shapes[group_id].colliding_obj = -1;
+        collision_count = 0;
+        group_normal = float3(0.0f, 0.0f, 0.0f);
+    }
+
+    float4 col = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    
+    if (shapes[group_id].hasPhysics == 0) {
+        return;
+    }
+
+    float3 shape_pos = float3(shapes[group_id].transform[0][3], shapes[group_id].transform[1][3], shapes[group_id].transform[2][3]);
+    float3 my_closest_rotation_contact = float3(0.0f, 0.0f, 0.0f);
+    float my_closest_rotation_contact_dist = 999.0f;
+    float3 my_closest_rotation_normal = float3(0.0f, 0.0f, 0.0f);
+
+    int colliding = 0;
+    float r = sdf.getBound(group_id);
+
+    float3 my_collisionForce = float3(0.0f, 0.0f, 0.0f);
+    float my_volume = 0.0f;
+    float my_deepest_collision = 0.0f;
+    float3 my_deepest_collision_direction = float3(0.0f, 0.0f, 0.0f);
+    float3 my_deepest_collision_position = float3(0.0f, 0.0f, 0.0f);
+    float3 my_collision_point_accumulator = float3(0.0f, 0.0f, 0.0f);
+    float3 my_normal_accumulator = float3(0.0f, 0.0f, 0.0f);
+    if (t_id == 0) {
+        shapes[group_id].deepest_collision = 0.0f;
+        shapes[group_id].drag_coeff = 0.5f;
+    }
+    
+    for (int i = 0; i < shapeCount; i++) {
+        float my_collision_volume = 0.0f;
+        if (t_id == 0) {
+            max_penetration = 0;
+            max_pushdir = float3(0.0f, 0.0f, 0.0f);
+        }
+        
+        if ((uint) i == group_id) {continue;}
+        int my_collision_count = 0;
+        float3 shape_pos_i = float3(shapes[i].transform[0][3], shapes[i].transform[1][3], shapes[i].transform[2][3]);
+        float r_i = sdf.getBound(i);
+        float3 d = shape_pos_i - shape_pos;
+        float3 centre;
+        float collisionVolumeRadius = 0;
+        if (r_i == -1.0f) {
+            if (shape_pos.y - r <= 0) {
+                r_i = 999.0f;
+            }
+            else {
+                continue;
+            }
+        }
+        if (length(d) > r + r_i) {continue;} //No sphere-sphere intersection
+
+        if (length(d) > r && length(d) > r_i) { //Intersection with centre of r_i outside of shape
+            centre = shape_pos + d * (r / (r + r_i)); 
+            float s = (r + r_i + length(d)) / 2;
+            collisionVolumeRadius = 2 * sqrt(s * (s - r) * (s - r_i) * (s - length(d))) / length(d);
+            col = float4(1.0f, 0.0f, 0.0f, 0.0f);
+        }
+        else {
+            if (r_i <= r) {
+                centre = shape_pos_i;
+                collisionVolumeRadius = r_i;
+            }
+            else {
+                centre = shape_pos;
+                collisionVolumeRadius = r;
+            }
+        }
+
+        Task task;
+        task.centre = centre;
+        task.width = (collisionVolumeRadius / 5.0f);
+        bool cont = true;
+
+        int res = point_sample(task, id, i, group_id);
+        if (res == RESAMPLE) {
+            resample_record[t_id] = 1;
+        }
+        else {
+            resample_record[t_id] = 0;
+        }
+
+        
+        if (res == HIT) {
+            colliding = 1;
+            shapes[group_id].hit_shape = i;
+        }
+        /**/
+        [loop]
+        for (int j = 0; j < 1000; j++) {
+            if (resample_record[j] == 0) {continue;}
+            col = float4(1.0f, 0.0f, 0.0f, 0.0f);
+            
+            Task tsk;
+
+            uint3 this_id = lin_id(j);
+            tsk.width = (collisionVolumeRadius) / 50.0f;
+            tsk.centre = id_to_samplepos(this_id, task.width, task.centre);
+            
+            float d = point_sample_final(tsk, id, group_id, i);
+            if (d != 0.0f) {
+                shapes[group_id].hit_shape = i;
+                colliding = 1;
+                group_colliding = 1;
+                
+                float3 sample_pos = id_to_samplepos(id, tsk.width, tsk.centre);
+                my_collision_point_accumulator += sample_pos;
+                
+                my_collision_count += 1;
+                float3 vec_to_centre = sample_pos - shape_pos;
+                
+                float3 gradient_at_contact = derivative(sample_pos, i);
+                my_normal_accumulator += gradient_at_contact;
+                
+                if (length(vec_to_centre) < my_closest_rotation_contact_dist) {
+                    my_closest_rotation_contact = sample_pos;
+                    my_closest_rotation_contact_dist = length(vec_to_centre);
+                    my_closest_rotation_normal = gradient_at_contact;
+                }
+                if (abs(d) > my_deepest_collision) {
+                    my_deepest_collision = d;
+                    my_deepest_collision_direction = gradient_at_contact;
+                    my_deepest_collision_position = sample_pos;
+                }
+            }
+        }
+        
+        for (uint k = 0; k < 1000; k++) {
+            //Yes, this is bad, but it also works
+            if (t_id == k) {
+                if (max_penetration < my_deepest_collision) {
+                    max_penetration = my_deepest_collision;
+                    max_pushdir = my_deepest_collision_direction;
+                }
+                
+                closest_rotation_contact += my_collision_point_accumulator;
+                group_normal += my_normal_accumulator;
+
+                collision_count += my_collision_count;
+
+            }
+            GroupMemoryBarrier();
+        }
+
+        if (t_id == 0) {
+            
+            if (collision_count != 0) {
+
+                closest_rotation_contact_dist = closest_rotation_contact_dist / collision_count;
+                closest_rotation_contact = closest_rotation_contact / collision_count;
+                group_normal = group_normal / collision_count;
+
+                shapes[group_id].rotation_position = closest_rotation_contact;
+                shapes[group_id].colliding_obj_norm = group_normal;
+            }
+            
+            shapes[group_id].collision_push += max_pushdir * max_penetration * (shapes[group_id].hasPhysics == 1 ? 0.5f : 1.0f);
+            if (shapes[group_id].deepest_collision < max_penetration) {
+                shapes[group_id].deepest_collision = max_penetration;
+                shapes[group_id].colliding_obj = i;
+                
+                shapes[group_id].drag_coeff = 2.0f;
+                shapes[group_id].deepest_collision_position = max_penetration_position;
+            }
+            
+        }
+    }
+}
+#pragma kernel ResolveCollisions
+
+float4x4 rotation_matrix(float3 axis, float angle) {
+    axis = normalize(axis);
+    float s;
+    float c;
+    sincos(angle, s, c);
+    float oc = 1.0f - c;
+    return float4x4(oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
+                    oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
+                    oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
+                    0.0,                                0.0,                                0.0,                                1.0);
+}
+
+float4x4 f3tof4(float3x3 mat) {
+    return float4x4(mat[0][0], mat[1][0], mat[2][0],  0.0,
+                    mat[0][1], mat[1][1], mat[2][1],  0.0,
+                    mat[0][2], mat[1][2], mat[2][2],  0.0,
+                          0.0,       0.0,       0.0,  1.0);
+}
+
+float3x3 tilde(float3 vec) {
+    return float3x3(
+        0.0f, -vec.z, vec.y,
+        vec.z, 0.0f, -vec.x,
+        -vec.y, vec.x, 0.0f
+    );
+}
+float3x3 orthogonalise(float3x3 mat) {
+    float3 x = float3(mat[0][0], mat[1][0], mat[2][0]);
+    float3 y = float3(mat[0][1], mat[1][1], mat[2][1]);
+    float3 z;
+    x = normalize(x);
+    z = normalize(cross(x, y));
+    y = normalize(cross(z, x));
+    mat[0][0] = x.x; mat[1][0] = x.y; mat[2][0] = x.z;
+    mat[0][1] = y.x; mat[1][1] = y.y; mat[2][1] = y.z;
+    mat[0][2] = z.x; mat[1][2] = z.y; mat[2][2] = z.z;
+    return mat;
+}
+
+float4x4 orthogonalise(float4x4 mat) {
+    float3 x = float3(mat[0][0], mat[1][0], mat[2][0]);
+    float3 y = float3(mat[0][1], mat[1][1], mat[2][1]);
+    float3 z;
+    x = normalize(x);
+    z = normalize(cross(x, y));
+    y = normalize(cross(z, x));
+    mat[0][0] = x.x; mat[1][0] = x.y; mat[2][0] = x.z;
+    mat[0][1] = y.x; mat[1][1] = y.y; mat[2][1] = y.z;
+    mat[0][2] = z.x; mat[1][2] = z.y; mat[2][2] = z.z;
+    return mat;
+}
+
+float smooth_dampen(float val, float t) {
+    if (val >= t) {
+        return 1.0f;
+    }
+    return val / t;
+}
+int set_cutout;
+[numthreads(1,1,1)]
+void ResolveCollisions(uint3 g_id : SV_GroupID){
+    uint my_id = g_id.x;
+    
+    if (shapes[my_id].hasPhysics == 0) {return;}
+    
+    if (length(shapes[my_id].collision_push) > 0.0f) {
+        translate(my_id, shapes[my_id].collision_push);
+    }
+
+    shapes[my_id].force = float3(0.0f, 1.0f, 0.0f) * -shapes[my_id].gravity * shapes[my_id].mass;
+    shapes[my_id].force -= 0.05f * shapes[my_id].velocity;
+    shapes[my_id].velocity += deltaTime * (shapes[my_id].force / shapes[my_id].mass);
+
+    
+    shapes[my_id].angular_momentum += deltaTime * shapes[my_id].torque;
+    
+    shapes[my_id].inverse_world_inertia_tensor = mul(mul(shapes[my_id].orientation, shapes[my_id].inverse_body_inertia_tensor), transpose(shapes[my_id].orientation));
+    shapes[my_id].angular_velocity = mul(shapes[my_id].inverse_world_inertia_tensor, shapes[my_id].angular_momentum);
+ 
+    int hit_index = shapes[my_id].hit_shape;
+
+    float3 shape_pos = float3(shapes[my_id].transform[0][3], shapes[my_id].transform[1][3], shapes[my_id].transform[2][3]);
+    float3 shape_pos_i = float3(shapes[hit_index].transform[0][3], shapes[hit_index].transform[1][3], shapes[hit_index].transform[2][3]);
+    float3 r = shapes[my_id].rotation_position - shape_pos;
+    float3 r_i = shapes[my_id].rotation_position - shape_pos_i;
+    float3 vel = float3(0.0f, 0.0f, 0.0f);
+    if (shapes[hit_index].hasPhysics) {
+        vel = ( ((shapes[my_id].velocity) + cross(shapes[my_id].angular_velocity, r)) - ((shapes[hit_index].velocity) + cross(shapes[hit_index].angular_velocity, r_i)) ) / 2.0f;
+    }
+    else {
+        vel = (shapes[my_id].velocity) + cross(shapes[my_id].angular_velocity, r);
+    }
+
+    float imp_top = -(1 + shapes[my_id].elasticity) * dot(vel, shapes[my_id].colliding_obj_norm);
+    float imp_bottom = (1.0f / shapes[my_id].mass) + dot(cross( mul(shapes[my_id].inverse_world_inertia_tensor, cross(r, shapes[my_id].colliding_obj_norm)), r), shapes[my_id].colliding_obj_norm);
+    float3 impulse = (imp_top / imp_bottom) * shapes[my_id].colliding_obj_norm;
+
+    shapes[my_id].velocity += impulse / shapes[my_id].mass;
+    shapes[my_id].angular_momentum += cross(r, impulse);
+    shapes[my_id].angular_velocity = mul(shapes[my_id].inverse_world_inertia_tensor, shapes[my_id].angular_momentum);
+    
+    shapes[my_id].angular_momentum *= pow(0.8f, deltaTime);
+    shapes[my_id].angular_velocity *= pow(0.8f, deltaTime);
+    shapes[my_id].velocity *= pow(0.8f, deltaTime);
+
+    shapes[my_id].orientation += deltaTime * mul(tilde(shapes[my_id].angular_velocity), shapes[my_id].orientation);
+    shapes[my_id].orientation = orthogonalise(shapes[my_id].orientation);
+
+    shapes[my_id].previous_pos = shape_pos;
+
+    float4x4 scale_mat = 0.0f;
+    scale_mat[0][0] = shapes[my_id].scale.x;
+    scale_mat[1][1] = shapes[my_id].scale.y;
+    scale_mat[2][2] = shapes[my_id].scale.z;
+    scale_mat[3][3] = 1.0f;
+    shapes[my_id].transform = invert(f3tof4(shapes[my_id].orientation));
+    shapes[my_id].transform = mul(shapes[my_id].transform, scale_mat);
+    setPos(my_id, shape_pos + 0.01f * shapes[my_id].colliding_obj_norm);
+
+    shapes[my_id].colliding_obj_norm = float3(0.0f, 0.0f, 0.0f);
+
+    setInverse(my_id);
+}

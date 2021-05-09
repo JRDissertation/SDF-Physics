@@ -1,0 +1,72 @@
+﻿struct Matrix3x3 {
+    float a00;
+    float a01;
+    float a02;
+    float a10;
+    float a11;
+    float a12;
+    float a20;
+    float a21;
+    float a22;
+
+};
+struct Shape {
+    float4x4 transform;
+    int shapeType;
+    float4 colour;
+    float3 scale;
+    float ambient;
+    float diffuse;
+    float specular;
+    int shininess;
+    float transparency;
+    float3 velocity;
+    float4x4 inverseTransform;
+    int hasPhysics;
+    int reflective;
+    float3 acceleration;
+    float3 collision_push;
+    float elasticity;
+    float mass;
+    float gravity;
+    int colliding_obj;
+    float3 colliding_obj_norm;
+    float deepest_collision;
+    float drag_coeff;
+    float3 rotation_axis;
+    float3 rotation_position;
+    float3 angular_velocity;
+    float angular_acceleration;
+    float3 angular_momentum;
+    float3 torque;
+    float3 force; 
+    float3 impulse;
+    float3 deepest_collision_position;
+    float3x3 orientation;
+    float3x3 inverse_world_inertia_tensor;
+    float3x3 inverse_body_inertia_tensor;
+    float collision_volume;
+    float3 previous_pos;
+    int hit_shape;
+};
+
+struct Light {
+    float3 position;
+    float3 direction;
+};
+
+struct Ray {
+    float3 position;
+    float3 direction;
+};
+
+struct Blend {
+    int BlendType;
+    int Shape1;
+    int Shape2;
+};
+
+struct Task {
+    float width;
+    float3 centre;
+};

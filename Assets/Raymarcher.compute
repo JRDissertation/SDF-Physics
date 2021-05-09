@@ -1,0 +1,351 @@
+﻿#include "SDF.compute"
+RWStructuredBuffer<Shape> shapes;
+
+#pragma kernel Render
+
+static const float maxDst = 1000;
+static const float epsilon = 0.0001f;
+
+Texture2D<float4> Source;
+RWTexture2D<float4> Result;
+
+
+float4x4 _CameraToWorld;
+float4x4 _CameraInverseProjection;
+int cutting_shape = 0;
+
+//RWStructuredBuffer<Shape> shapes;
+int shapeCount;
+
+StructuredBuffer<Light> lights;
+int lightCount;
+
+StructuredBuffer<Blend> blend;
+
+SDF sdf;
+
+
+
+Ray CreateCameraRay(float2 uv) {
+    float3 position = mul(_CameraToWorld, float4(0,0,0,1)).xyz;
+    float3 direction = mul(_CameraInverseProjection, float4(uv,0,1)).xyz;
+    direction = mul(_CameraToWorld, float4(direction,0)).xyz;
+    direction = normalize(direction);
+    Ray ray;
+    ray.direction = direction;
+    ray.position = position;
+    return ray;
+}
+
+
+
+float shadow(float3 pos, float3 dir, float dist) {
+    for (float t = 0.1; t < dist;) {
+        float h = sdf.worldSDF(pos + t * dir);
+        if (h < 0.001) {
+            return 0.0;
+        }
+        t += h;
+    }
+    return 1.0;
+}
+
+float3 getNormal(float3 position, int objIndex) {
+    float3 normal = float3(
+        sdf.SDF( float3(position.x + epsilon, position.y, position.z), objIndex) - 
+        sdf.SDF( float3(position.x - epsilon, position.y, position.z), objIndex) ,
+        sdf.SDF( float3(position.x, position.y + epsilon, position.z), objIndex) - 
+        sdf.SDF( float3(position.x, position.y - epsilon, position.z), objIndex) ,
+        sdf.SDF( float3(position.x, position.y, position.z + epsilon), objIndex) - 
+        sdf.SDF( float3(position.x, position.y, position.z - epsilon), objIndex) );
+        normal = normalize(normal);
+        return normal;
+}
+
+void setInverse(int id) {
+    float4x4 m = shapes[id].transform;
+    float A2323 = m[2][2] * m[3][3] - m[2][3] * m[3][2] ;
+    float A1323 = m[2][1] * m[3][3] - m[2][3] * m[3][1] ;
+    float A1223 = m[2][1] * m[3][2] - m[2][2] * m[3][1] ;
+    float A0323 = m[2][0] * m[3][3] - m[2][3] * m[3][0] ;
+    float A0223 = m[2][0] * m[3][2] - m[2][2] * m[3][0] ;
+    float A0123 = m[2][0] * m[3][1] - m[2][1] * m[3][0] ;
+    float A2313 = m[1][2] * m[3][3] - m[1][3] * m[3][2] ;
+    float A1313 = m[1][1] * m[3][3] - m[1][3] * m[3][1] ;
+    float A1213 = m[1][1] * m[3][2] - m[1][2] * m[3][1] ;
+    float A2312 = m[1][2] * m[2][3] - m[1][3] * m[2][2] ;
+    float A1312 = m[1][1] * m[2][3] - m[1][3] * m[2][1] ;
+    float A1212 = m[1][1] * m[2][2] - m[1][2] * m[2][1] ;
+    float A0313 = m[1][0] * m[3][3] - m[1][3] * m[3][0] ;
+    float A0213 = m[1][0] * m[3][2] - m[1][2] * m[3][0] ;
+    float A0312 = m[1][0] * m[2][3] - m[1][3] * m[2][0] ;
+    float A0212 = m[1][0] * m[2][2] - m[1][2] * m[2][0] ;
+    float A0113 = m[1][0] * m[3][1] - m[1][1] * m[3][0] ;
+    float A0112 = m[1][0] * m[2][1] - m[1][1] * m[2][0] ;
+
+    float det = m[0][0] * ( m[1][1] * A2323 - m[1][2] * A1323 + m[1][3] * A1223 ) 
+              - m[0][1] * ( m[1][0] * A2323 - m[1][2] * A0323 + m[1][3] * A0223 ) 
+              + m[0][2] * ( m[1][0] * A1323 - m[1][1] * A0323 + m[1][3] * A0123 ) 
+              - m[0][3] * ( m[1][0] * A1223 - m[1][1] * A0223 + m[1][2] * A0123 ) ;
+    det = 1 / det;
+
+    float4x4 a = {
+        det *   ( m[1][1] * A2323 - m[1][2] * A1323 + m[1][3] * A1223 ), 
+        det * - ( m[0][1] * A2323 - m[0][2] * A1323 + m[0][3] * A1223 ),
+        det *   ( m[0][1] * A2313 - m[0][2] * A1313 + m[0][3] * A1213 ),
+        det * - ( m[0][1] * A2312 - m[0][2] * A1312 + m[0][3] * A1212 ),
+        det * - ( m[1][0] * A2323 - m[1][2] * A0323 + m[1][3] * A0223 ),
+        det *   ( m[0][0] * A2323 - m[0][2] * A0323 + m[0][3] * A0223 ),
+        det * - ( m[0][0] * A2313 - m[0][2] * A0313 + m[0][3] * A0213 ),
+        det *   ( m[0][0] * A2312 - m[0][2] * A0312 + m[0][3] * A0212 ),
+        det *   ( m[1][0] * A1323 - m[1][1] * A0323 + m[1][3] * A0123 ),
+        det * - ( m[0][0] * A1323 - m[0][1] * A0323 + m[0][3] * A0123 ),
+        det *   ( m[0][0] * A1313 - m[0][1] * A0313 + m[0][3] * A0113 ),
+        det * - ( m[0][0] * A1312 - m[0][1] * A0312 + m[0][3] * A0112 ),
+        det * - ( m[1][0] * A1223 - m[1][1] * A0223 + m[1][2] * A0123 ),
+        det *   ( m[0][0] * A1223 - m[0][1] * A0223 + m[0][2] * A0123 ),
+        det * - ( m[0][0] * A1213 - m[0][1] * A0213 + m[0][2] * A0113 ),
+        det *   ( m[0][0] * A1212 - m[0][1] * A0212 + m[0][2] * A0112 ),
+    };
+    shapes[id].inverseTransform = a;
+}
+
+static const float3 cool = float3(0.0f, 0.6f, 0.9f);
+static const float3 medium = float3(1.0f, 1.0f, 0.0f);
+static const float3 hot = float3(1.0f, 0.0f, 0.0f);
+
+float3 heat_colour(float t)
+{
+  return
+    t < 0.5f 
+    ? lerp(cool.rgb, medium.rgb, t / 0.5f) 
+    : lerp(medium.rgb, hot.rgb, (t - 0.5f) / 0.5f);
+}
+/*
+float3 getRefractionDir(float3 I, float3 N, float refractiveIndex) {
+    float cosi = clamp(dot(I, N), -1, 1); 
+    
+    float etai = 1, etat = refractiveIndex; 
+    float3 n = N; 
+    if (cosi < 0) { 
+        cosi = -cosi; 
+    } 
+    else { 
+        float temp = etai;
+        etai = etat;
+        etat = temp;
+        n= -N; 
+    } 
+    float eta = etai / etat; 
+    float k = 1 - eta * eta * (1 - cosi * cosi); 
+    return k < 0 ? 0 : eta * I + (eta * cosi - sqrt(k)) * n; 
+}*/
+
+//Get objects which are within (threshold) of line (add threshold variable?) (compute in parallel w / shared memory?)
+int object_touched(float3 direction, int obj_index) {
+    float bound = sdf.getBound(obj_index);
+
+    if (shapes[obj_index].shapeType == 4) { 
+        if (direction.y < 0) {
+            return 1;
+        }
+        return -1;
+    }
+
+    float3 p = float3(shapes[obj_index].transform[0][3], shapes[obj_index].transform[1][3], shapes[obj_index].transform[2][3]);
+    float3 a = mul(_CameraToWorld, float4(0,0,0,1)).xyz;
+    return length((a - p) - (dot((a - p), direction) * direction)) > bound ? -1 : 1;
+}
+
+int object_touched_ray(Ray ray, int obj_index) {
+    float bound = sdf.getBound(obj_index);
+
+    if (shapes[obj_index].shapeType == 4) { 
+        if (ray.direction.y < 0) {
+            return 1;
+        }
+        return -1;
+    }
+
+    if (shapes[obj_index].shapeType == 6) { 
+        return 1;
+    }
+
+    float3 p = float3(shapes[obj_index].transform[0][3], shapes[obj_index].transform[1][3], shapes[obj_index].transform[2][3]);
+    float3 a = ray.position;
+    return length((a - p) - (dot((a - p), ray.direction) * ray.direction)) > bound ? -1 : 1;
+}
+
+void setPos(int shape, float3 pos) {
+    shapes[shape].transform[0][3] = pos.x;
+    shapes[shape].transform[1][3] = pos.y;
+    shapes[shape].transform[2][3] = pos.z;
+}
+
+
+
+#define max_shapes 513
+[numthreads(32,32,1)]
+void Render (uint3 id : SV_DispatchThreadID)
+{
+    uint width,height;
+    Result.GetDimensions(width, height);
+    
+    Result[id.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    
+    sdf.shapes = shapes;
+    sdf.shapeCount = shapeCount;
+    sdf.lights = lights;
+    sdf.lightCount = lightCount;
+    sdf.cutting_shape = cutting_shape;
+    float2 uv = id.xy / float2(width,height) * 2 - 1;
+    Ray ray = CreateCameraRay(uv);
+    int shapeTouchCount = 0;
+    int hitShape = -1;
+    int shapeIndexArray[max_shapes];
+    int hitsPlane = 0;
+    int planeIndex = 0;
+    for (int i = 0; i < max_shapes; i++) {
+        shapeIndexArray[i] = object_touched(ray.direction, i);
+        if (shapeIndexArray[i] == 1) {
+            if (shapes[i].shapeType == 4) {
+                hitsPlane = 1;
+                planeIndex = i;
+                //shapeIndexArray[i] = 0;
+            }
+            shapeTouchCount++;
+            hitShape = i;
+        }
+    } //Fix this - Possibly add another kernel to precompute which rays touch the objects?
+    bool cont = true;
+    int hitIndex = -1;
+
+    if (shapeTouchCount == 1 && shapes[hitShape].shapeType == 4) {
+        cont = false;
+        hitIndex = hitShape;
+        float lambda = - (ray.position.y) / ray.direction.y;
+        ray.position = ray.position + lambda * ray.direction;
+    }
+
+    
+
+    float dist = 0.0f;
+    int step = 0;
+    
+    bool hit = false;
+    float inside = 1.0f;
+    
+    float4 colour = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    float3 normal = float3(0.0f, 0.0f, 0.0f);
+    float count = 0;
+    
+    while (cont) {
+        step ++;
+        count ++;
+        float distance = 1234567.0f;
+        
+        for (int i = 0; i < shapeCount; i++) {
+            if (shapeIndexArray[i] == 1) {
+                float d = sdf.SDF(ray.position, i);
+            
+                if (d < distance) {
+                    distance = d;
+                    hitIndex = i;
+                }
+            }
+            
+        }
+        
+        ray.position += ray.direction * distance;// * inside;
+        dist += distance; 
+        
+        if (distance < epsilon && shapes[hitIndex].reflective == 1) {
+            ray.position -= ray.direction * distance;
+            float3 normal = getNormal(ray.position, hitIndex);
+            ray.direction = normalize(ray.direction - 2 * (dot(ray.direction, normal) * normal));
+            
+            distance = 2 * epsilon;
+            ray.position += 0.01 * ray.direction;
+            hitsPlane = 0;
+            for (int i = 0; i < shapeCount; i++) {
+                shapeIndexArray[i] = object_touched_ray(ray, i);
+                if (shapeIndexArray[i] == 1) {
+                    if (shapes[i].shapeType == 4) {
+                        hitsPlane = 1;
+                        planeIndex = i;
+                        //shapeIndexArray[i] = 0;
+                    }
+                    shapeTouchCount++;
+                    hitShape = i;
+                }
+            }
+        }
+        
+        cont = ( (distance > epsilon) && (step < 500) && (dist < maxDst));
+        
+        
+
+        if (distance > epsilon) {
+            hitIndex = -1;
+        }
+    }
+
+    if (hitsPlane == 1 && hitIndex == -1) {
+        hit = true;
+        hitIndex = planeIndex;
+    }
+
+    /**///  ** = heatmap per thread group   * = regular renderer 
+    /*
+    Result[id.xy] = float4(count, 0, 0, 0);
+    AllMemoryBarrierWithGroupSync();
+    
+    int2 tileBaseId = 32 * (uint2(id.xy) / 32);
+    float maxHeat = 0.0f;
+    for (int i = 0; i < 32; ++i)
+        for (int j = 0; j < 32; ++j)
+            maxHeat = max(maxHeat, Result[tileBaseId + int2(i, j)].x);
+
+    AllMemoryBarrierWithGroupSync();
+    Result[id.xy] = float4(heat_colour((float) maxHeat / (float) 175), 0);
+    */
+    
+    if (hitIndex != -1) {
+        float3 normal = getNormal(ray.position, hitIndex); 
+        
+        float3 dirToLight = normalize( lights[0].position - ray.position );
+        float distToLight = distance(lights[0].position, ray.position);
+
+        float ambient = shapes[hitIndex].ambient;
+
+        if (distToLight > 50.0f) {
+            Result[id.xy] = shapes[hitIndex].colour * ambient;
+            return;
+        }
+
+        float3 dirToCam = normalize(mul(_CameraToWorld, float4(0,0,0,1)).xyz - ray.position);
+        
+        float3 Rm = (2 * dot(dirToLight, normal) * normal) - dirToLight;
+        Rm = normalize(Rm);
+        
+        float diffuse = shapes[hitIndex].diffuse * clamp(dot(normal, dirToLight), 0, 1);
+
+        diffuse *= (100/(distToLight * distToLight));
+        
+        float s = shadow(ray.position, dirToLight, distToLight);
+        
+        
+        
+        //float specular = shapes[hitIndex].specular * (pow(clamp(dot(Rm, dirToCam),0,1), shapes[hitIndex].shininess));
+
+        float4 res = shapes[hitIndex].colour * ( (s * diffuse) + ambient);// + specular);
+        res.w = dist;
+        
+        Result[id.xy] = res;
+    }
+    
+    if (hitIndex == -1) {
+        Result[id.xy] = float4(0.0f, 0.5f, 1.0f, dist) * (ray.direction.y + 0.3);// * (count / 100.0f);
+    }
+    
+}
